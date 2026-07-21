@@ -1,3 +1,14 @@
+import subprocess
+import sys
+
+# Force install all required packages at startup
+subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet",
+    "discord.py==2.4.0",
+    "anthropic==0.25.0", 
+    "python-dotenv==1.0.0",
+    "PyNaCl==1.5.0"
+])
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -88,11 +99,9 @@ async def reading(interaction: discord.Interaction, question: str = None):
     cards_in_reading = [(positions[i], drawn[i], CARDS[drawn[i]]) for i in range(3)]
     summary = madame_ibex_summary(cards_in_reading, question, "3 Card Past/Present/Future")
     embed = build_reading_embed("3-Card Reading", cards_in_reading, summary, question)
-
     images = [CARDS[name].get("image_url") for name in drawn if CARDS[name].get("image_url")]
     if images:
         embed.set_image(url=images[0])
-
     await interaction.followup.send(embed=embed)
 
 class SpreadSelect(discord.ui.Select):
