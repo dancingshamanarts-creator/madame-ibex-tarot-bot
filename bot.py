@@ -3,8 +3,6 @@ from discord import app_commands
 from discord.ext import commands
 import random
 import os
-import io
-import aiohttp
 import anthropic
 from card_data import CARDS, get_card, SPREAD_TYPES
 
@@ -18,36 +16,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-
-async def fetch_card_files(card_names):
-    """Download each drawn card's image and return them as Discord file
-    attachments, so multiple card images can be shown in one message.
-
-    - Preserves the order of card_names (Past, Present, Future, etc.).
-    - Skips any card with no image_url, or any image that fails to download,
-      rather than crashing the whole reading.
-    - The filename is prefixed with its position number so Discord keeps
-      them in the drawn order.
-    """
-    files = []
-    async with aiohttp.ClientSession() as session:
-        for index, name in enumerate(card_names):
-            url = CARDS.get(name, {}).get("image_url")
-            if not url:
-                continue
-            try:
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        continue
-                    data = await resp.read()
-            except Exception:
-                # Network hiccup on one card shouldn't kill the reading.
-                continue
-            # Build a safe filename from the card name.
-            safe = name.lower().replace(" ", "-").replace("/", "-")
-            filename = f"{index+1:02d}-{safe}.jpg"
-            files.append(discord.File(io.BytesIO(data), filename=filename))
-    return files
 
 MADAME_IBEX_SYSTEM = """You are channeling the voice of Madame Ibex — a visual tarot reader of rare and unconventional sight.
 
@@ -86,45 +54,66 @@ def madame_ibex_summary(cards_in_reading, question=None, spread_type="3 Card"):
     return response.content[0].text
 
 
-def build_reading_embed(title, cards_in_reading, summary, question=None):
-    color = discord.Color.from_rgb(75, 0, 130)
+def build_reading_embeds(title, cards_in_reading, summary, question=None):
+    """Build a LIST of embeds:
+      - one embed per card, showing that card's image inline (by URL) plus
+        its interpretation (or traditional meaning + a note if not yet written)
+      - a final embed carrying Madame Ibex's full woven reading
 
-    # The reading summary goes in the embed DESCRIPTION (limit 4096),
-    # not a field (limit 1024). Trimmed to 4000 as a hard safety net so
-    # an unusually long reading can never crash the message again.
+    Images set by URL preview inline (no clicking), which needs the repo
+    public — it is. Discord allows at most 10 embeds per message, which
+    comfortably covers every current spread.
+    """
+    color = discord.Color.from_rgb(75, 0, 130)
+    embeds = []
+
+    total = len(cards_in_reading)
+    for i, (position, card_name, card_data) in enumerate(cards_in_reading):
+        interp = card_data.get("madame_ibex")
+        if interp:
+            body = interp
+        else:
+            traditional = card_data.get("traditional", "")
+            body = (
+                f"*{traditional}*\n\n"
+                f"*Madame Ibex is still interpreting this card.*"
+            )
+        # Description limit is 4096; trim as a safety net.
+        if len(body) > 4000:
+            body = body[:3997] + "..."
+
+        card_embed = discord.Embed(
+            title=f"✦ {position}: {card_name}",
+            description=body,
+            color=color,
+        )
+        # First card's embed carries the header + optional question.
+        if i == 0:
+            card_embed.set_author(name=f"Madame Ibex — {title}")
+            if question:
+                q = question if len(question) <= 1024 else question[:1021] + "..."
+                card_embed.add_field(name="Question", value=q, inline=False)
+
+        image_url = card_data.get("image_url")
+        if image_url:
+            card_embed.set_image(url=image_url)
+
+        card_embed.set_footer(text=f"Card {i+1} of {total}")
+        embeds.append(card_embed)
+
+    # Final embed: the full woven reading.
     safe_summary = summary.strip()
     if len(safe_summary) > 4000:
         safe_summary = safe_summary[:3997] + "..."
-
-    embed = discord.Embed(
-        title=f"🔮 {title}",
+    summary_embed = discord.Embed(
+        title="✦ Madame Ibex Reads the Spread",
         description=safe_summary,
         color=color,
     )
-    embed.set_author(name="Madame Ibex — Madame Ibex Tarot")
+    summary_embed.set_footer(text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot")
+    embeds.append(summary_embed)
 
-    if question:
-        # A field, so also protected by the 1024 limit.
-        q = question if len(question) <= 1024 else question[:1021] + "..."
-        embed.add_field(name="Question", value=q, inline=False)
-
-    embed.add_field(name="\u200b", value="─" * 40, inline=False)
-
-    for position, card_name, card_data in cards_in_reading:
-        interp = card_data.get("madame_ibex")
-        if interp:
-            label = f"✦ {position}: {card_name}"
-            short = interp[:300] + "..." if len(interp) > 300 else interp
-        else:
-            label = f"✦ {position}: {card_name}"
-            short = f"*{card_data.get('traditional', 'Interpretation coming from Madame Ibex...')}*\n*(Traditional meaning — Madame Ibex has not yet written her interpretation of this card)*"
-        # Every field value is capped at 1024 by Discord — trim to be safe.
-        if len(short) > 1024:
-            short = short[:1021] + "..."
-        embed.add_field(name=label, value=short, inline=False)
-
-    embed.set_footer(text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot")
-    return embed
+    return embeds
 
 
 @bot.event
@@ -142,10 +131,9 @@ async def reading(interaction: discord.Interaction, question: str = None):
     positions = ["Past", "Present", "Future"]
     cards_in_reading = [(positions[i], drawn[i], CARDS[drawn[i]]) for i in range(3)]
     summary = madame_ibex_summary(cards_in_reading, question, "3 Card Past/Present/Future")
-    embed = build_reading_embed("3-Card Reading", cards_in_reading, summary, question)
-    # Show every drawn card's image, in order, as attachments below the reading.
-    card_files = await fetch_card_files(drawn)
-    await interaction.followup.send(embed=embed, files=card_files)
+    embeds = build_reading_embeds("3-Card Reading", cards_in_reading, summary, question)
+    # One embed per card (image shown inline) + the summary embed last.
+    await interaction.followup.send(embeds=embeds)
 
 
 class SpreadSelect(discord.ui.Select):
@@ -205,12 +193,8 @@ class CardEntryModal(discord.ui.Modal):
             return
 
         summary = madame_ibex_summary(cards_in_reading, self.question, self.spread_name)
-        embed = build_reading_embed(f"✦ Madame Ibex — {self.spread_name}", cards_in_reading, summary, self.question)
-        # cards_in_reading is a list of (position, card_name, card_data);
-        # pull the card names in order to fetch their images.
-        drawn_names = [c[1] for c in cards_in_reading]
-        card_files = await fetch_card_files(drawn_names)
-        await interaction.followup.send(embed=embed, files=card_files)
+        embeds = build_reading_embeds(f"Madame Ibex — {self.spread_name}", cards_in_reading, summary, self.question)
+        await interaction.followup.send(embeds=embeds)
 
 
 @tree.command(name="myreading", description="Madame Ibex reads your cards personally — Patreon members only")
