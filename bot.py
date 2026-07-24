@@ -3,6 +3,8 @@ from discord import app_commands
 from discord.ext import commands
 import random
 import os
+import io
+import aiohttp
 import anthropic
 from card_data import CARDS, get_card, SPREAD_TYPES
 
@@ -15,6 +17,37 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+async def fetch_card_files(card_names):
+    """Download each drawn card's image and return them as Discord file
+    attachments, so multiple card images can be shown in one message.
+
+    - Preserves the order of card_names (Past, Present, Future, etc.).
+    - Skips any card with no image_url, or any image that fails to download,
+      rather than crashing the whole reading.
+    - The filename is prefixed with its position number so Discord keeps
+      them in the drawn order.
+    """
+    files = []
+    async with aiohttp.ClientSession() as session:
+        for index, name in enumerate(card_names):
+            url = CARDS.get(name, {}).get("image_url")
+            if not url:
+                continue
+            try:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.read()
+            except Exception:
+                # Network hiccup on one card shouldn't kill the reading.
+                continue
+            # Build a safe filename from the card name.
+            safe = name.lower().replace(" ", "-").replace("/", "-")
+            filename = f"{index+1:02d}-{safe}.jpg"
+            files.append(discord.File(io.BytesIO(data), filename=filename))
+    return files
 
 MADAME_IBEX_SYSTEM = """You are channeling the voice of Madame Ibex — a visual tarot reader of rare and unconventional sight.
 
@@ -110,10 +143,9 @@ async def reading(interaction: discord.Interaction, question: str = None):
     cards_in_reading = [(positions[i], drawn[i], CARDS[drawn[i]]) for i in range(3)]
     summary = madame_ibex_summary(cards_in_reading, question, "3 Card Past/Present/Future")
     embed = build_reading_embed("3-Card Reading", cards_in_reading, summary, question)
-    images = [CARDS[name].get("image_url") for name in drawn if CARDS[name].get("image_url")]
-    if images:
-        embed.set_image(url=images[0])
-    await interaction.followup.send(embed=embed)
+    # Show every drawn card's image, in order, as attachments below the reading.
+    card_files = await fetch_card_files(drawn)
+    await interaction.followup.send(embed=embed, files=card_files)
 
 
 class SpreadSelect(discord.ui.Select):
@@ -174,7 +206,11 @@ class CardEntryModal(discord.ui.Modal):
 
         summary = madame_ibex_summary(cards_in_reading, self.question, self.spread_name)
         embed = build_reading_embed(f"✦ Madame Ibex — {self.spread_name}", cards_in_reading, summary, self.question)
-        await interaction.followup.send(embed=embed)
+        # cards_in_reading is a list of (position, card_name, card_data);
+        # pull the card names in order to fetch their images.
+        drawn_names = [c[1] for c in cards_in_reading]
+        card_files = await fetch_card_files(drawn_names)
+        await interaction.followup.send(embed=embed, files=card_files)
 
 
 @tree.command(name="myreading", description="Madame Ibex reads your cards personally — Patreon members only")
