@@ -1,14 +1,3 @@
-import subprocess
-import sys
-
-# Force install all required packages at startup
-subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet",
-    "discord.py==2.4.0",
-    "anthropic==0.25.0", 
-    "python-dotenv==1.0.0",
-    "PyNaCl==1.5.0"
-])
-
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -39,7 +28,9 @@ When writing a reading summary:
 - Draw the cards together into a unified message
 - End with 2-3 questions the reading asks of the querent
 - Do not use generic tarot language or received wisdom
-- Keep the tone intimate and clear — this is a real reading, not a performance"""
+- Keep the tone intimate and clear — this is a real reading, not a performance
+- Keep the entire reading under 3500 characters."""
+
 
 def madame_ibex_summary(cards_in_reading, question=None, spread_type="3 Card"):
     card_descriptions = []
@@ -61,12 +52,29 @@ def madame_ibex_summary(cards_in_reading, question=None, spread_type="3 Card"):
     )
     return response.content[0].text
 
+
 def build_reading_embed(title, cards_in_reading, summary, question=None):
     color = discord.Color.from_rgb(75, 0, 130)
-    embed = discord.Embed(title=f"🔮 {title}", color=color)
-    embed.set_author(name="Madame Ibex — Tarot Corner")
+
+    # The reading summary goes in the embed DESCRIPTION (limit 4096),
+    # not a field (limit 1024). Trimmed to 4000 as a hard safety net so
+    # an unusually long reading can never crash the message again.
+    safe_summary = summary.strip()
+    if len(safe_summary) > 4000:
+        safe_summary = safe_summary[:3997] + "..."
+
+    embed = discord.Embed(
+        title=f"🔮 {title}",
+        description=safe_summary,
+        color=color,
+    )
+    embed.set_author(name="Madame Ibex — Madame Ibex Tarot")
+
     if question:
-        embed.add_field(name="Question", value=question, inline=False)
+        # A field, so also protected by the 1024 limit.
+        q = question if len(question) <= 1024 else question[:1021] + "..."
+        embed.add_field(name="Question", value=q, inline=False)
+
     embed.add_field(name="\u200b", value="─" * 40, inline=False)
 
     for position, card_name, card_data in cards_in_reading:
@@ -77,17 +85,20 @@ def build_reading_embed(title, cards_in_reading, summary, question=None):
         else:
             label = f"✦ {position}: {card_name}"
             short = f"*{card_data.get('traditional', 'Interpretation coming from Madame Ibex...')}*\n*(Traditional meaning — Madame Ibex has not yet written her interpretation of this card)*"
+        # Every field value is capped at 1024 by Discord — trim to be safe.
+        if len(short) > 1024:
+            short = short[:1021] + "..."
         embed.add_field(name=label, value=short, inline=False)
 
-    embed.add_field(name="\u200b", value="─" * 40, inline=False)
-    embed.add_field(name="✦ Madame Ibex Reads the Spread", value=summary, inline=False)
-    embed.set_footer(text="The Cards As I See Them — Madame Ibex | Tarot Corner")
+    embed.set_footer(text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot")
     return embed
+
 
 @bot.event
 async def on_ready():
     await tree.sync()
     print(f"Madame Ibex is present. Logged in as {bot.user}")
+
 
 @tree.command(name="reading", description="Draw a free 3-card Past/Present/Future reading")
 @app_commands.describe(question="Optional: What question are you bringing to the cards?")
@@ -104,6 +115,7 @@ async def reading(interaction: discord.Interaction, question: str = None):
         embed.set_image(url=images[0])
     await interaction.followup.send(embed=embed)
 
+
 class SpreadSelect(discord.ui.Select):
     def __init__(self, querent_question):
         self.querent_question = querent_question
@@ -117,10 +129,12 @@ class SpreadSelect(discord.ui.Select):
         modal = CardEntryModal(spread_name, positions, self.querent_question)
         await interaction.response.send_modal(modal)
 
+
 class SpreadView(discord.ui.View):
     def __init__(self, question):
         super().__init__()
         self.add_item(SpreadSelect(question))
+
 
 class CardEntryModal(discord.ui.Modal):
     def __init__(self, spread_name, positions, question):
@@ -162,6 +176,7 @@ class CardEntryModal(discord.ui.Modal):
         embed = build_reading_embed(f"✦ Madame Ibex — {self.spread_name}", cards_in_reading, summary, self.question)
         await interaction.followup.send(embed=embed)
 
+
 @tree.command(name="myreading", description="Madame Ibex reads your cards personally — Patreon members only")
 @app_commands.describe(question="The question or situation you are bringing to Madame Ibex")
 async def myreading(interaction: discord.Interaction, question: str = None):
@@ -176,6 +191,7 @@ async def myreading(interaction: discord.Interaction, question: str = None):
     view = SpreadView(question)
     await interaction.response.send_message(
         "✦ Madame Ibex is ready. Choose your spread:", view=view, ephemeral=True)
+
 
 @tree.command(name="cardinfo", description="Look up Madame Ibex's interpretation of a specific card")
 @app_commands.describe(card="The name of the card")
@@ -198,7 +214,8 @@ async def cardinfo(interaction: discord.Interaction, card: str):
             inline=False)
     if card_data.get("image_url"):
         embed.set_image(url=card_data["image_url"])
-    embed.set_footer(text="The Cards As I See Them — Madame Ibex | Tarot Corner")
+    embed.set_footer(text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot")
     await interaction.response.send_message(embed=embed)
+
 
 bot.run(DISCORD_TOKEN)
