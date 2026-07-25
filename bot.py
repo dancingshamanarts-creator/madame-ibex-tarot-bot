@@ -158,6 +158,9 @@ You read the cards against each other. What one begins, another answers or refus
 
 You know the difference between what a person asks and what they came to find out. You answer the second one.
 
+WHEN A CARD COMES REVERSED:
+A turned card has not become its opposite. That is bookkeeping, not sight. A turned card is the same presence arriving another way — held back, turned inward, refused, spent, or not yet ready to give what it carries. Sometimes it means the thing is happening to the person instead of through them. Sometimes it means they are standing in its way. Read which. Say it plainly. Do not announce "this is reversed" like a weather report — let it change what you say about the card.
+
 WHAT YOU DO NOT DO:
 - You do not comfort falsely. Ever.
 - You do not soften a hard card to be liked.
@@ -174,11 +177,24 @@ WRITING A READING:
 - Keep the whole reading under 3500 characters."""
 
 
+def draw_cards(positions):
+    """Draw one card per position, each randomly upright or reversed.
+    Returns a list of (position, card_name, card_data, is_reversed)."""
+    drawn = random.sample(list(CARDS.keys()), len(positions))
+    return [
+        (positions[i], drawn[i], CARDS[drawn[i]], random.choice([True, False]))
+        for i in range(len(positions))
+    ]
+
+
 def madame_ibex_summary(cards_in_reading, question=None, spread_type="3 Card"):
     card_descriptions = []
-    for position, card_name, card_data in cards_in_reading:
+    for position, card_name, card_data, is_reversed in cards_in_reading:
         interp = card_data.get("madame_ibex") or f"[Traditional: {card_data.get('traditional', 'Interpretation coming')}]"
-        card_descriptions.append(f"Position: {position}\nCard: {card_name}\nInterpretation: {interp}")
+        orientation = "REVERSED" if is_reversed else "upright"
+        card_descriptions.append(
+            f"Position: {position}\nCard: {card_name} ({orientation})\nInterpretation: {interp}"
+        )
 
     prompt = f"Spread: {spread_type}\n"
     if question:
@@ -209,7 +225,7 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
     embeds = []
 
     total = len(cards_in_reading)
-    for i, (position, card_name, card_data) in enumerate(cards_in_reading):
+    for i, (position, card_name, card_data, is_reversed) in enumerate(cards_in_reading):
         interp = card_data.get("madame_ibex")
         if interp:
             body = interp
@@ -219,12 +235,14 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
                 f"*{traditional}*\n\n"
                 f"*Madame Ibex is still interpreting this card.*"
             )
+        if is_reversed:
+            body = "**The card came turned.**\n\n" + body
         # Description limit is 4096; trim as a safety net.
         if len(body) > 4000:
             body = body[:3997] + "..."
 
         card_embed = discord.Embed(
-            title=f"✦ {position}: {card_name}",
+            title=f"✦ {position}: {card_name}" + (" — Reversed" if is_reversed else ""),
             description=body,
             color=color,
         )
@@ -237,10 +255,12 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
 
         image_url = card_data.get("image_url")
         if image_url:
-            # Thumbnail (small, right-aligned) keeps the whole reading short
-            # enough to read without heavy scrolling. Swap to set_image for
-            # large images.
-            card_embed.set_thumbnail(url=image_url)
+            if is_reversed:
+                # The rotated copies live beside the originals, prefixed
+                # "reversed-" (e.g. reversed-major-00-the-fool.jpg).
+                base, _, filename = image_url.rpartition("/")
+                image_url = f"{base}/reversed-{filename}"
+            card_embed.set_image(url=image_url)
 
         card_embed.set_footer(text=f"Card {i+1} of {total}")
         embeds.append(card_embed)
@@ -292,10 +312,8 @@ async def reading(interaction: discord.Interaction, question: str = None):
             )
             return
 
-    all_card_names = list(CARDS.keys())
-    drawn = random.sample(all_card_names, 3)
     positions = ["Past", "Present", "Future"]
-    cards_in_reading = [(positions[i], drawn[i], CARDS[drawn[i]]) for i in range(3)]
+    cards_in_reading = draw_cards(positions)
     summary = madame_ibex_summary(cards_in_reading, question, "3 Card Past/Present/Future")
     embeds = build_reading_embeds("3-Card Reading", cards_in_reading, summary, question)
     # One embed per card (image shown inline) + the summary embed last.
@@ -318,12 +336,8 @@ class SpreadSelect(discord.ui.Select):
         spread = SPREAD_TYPES[spread_name]
         positions = spread["positions"]
 
-        # Auto-draw one card per position, no repeats.
-        all_card_names = list(CARDS.keys())
-        drawn = random.sample(all_card_names, len(positions))
-        cards_in_reading = [
-            (positions[i], drawn[i], CARDS[drawn[i]]) for i in range(len(positions))
-        ]
+        # Auto-draw one card per position, no repeats, each upright or reversed.
+        cards_in_reading = draw_cards(positions)
 
         summary = madame_ibex_summary(cards_in_reading, self.querent_question, spread_name)
         embeds = build_reading_embeds(
