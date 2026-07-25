@@ -4,17 +4,81 @@ from discord.ext import commands
 import random
 import os
 import anthropic
+import asyncpg
+from datetime import datetime, timezone, timedelta
 from card_data import CARDS, get_card, SPREAD_TYPES
 
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 PATREON_ROLE_NAME = os.environ.get("PATREON_ROLE_NAME", "Patreon")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 intents = discord.Intents.default()
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+# ─── DATABASE (free-reading daily limit) ────────────────────────────
+# One free /reading per non-Patreon user per calendar day (UTC).
+# We store the date of each user's most recent free reading; if it's
+# already today, they're asked to come back tomorrow.
+db_pool = None
+
+
+async def setup_database():
+    """Create the connection pool and the tracking table if missing."""
+    global db_pool
+    if not DATABASE_URL:
+        print("WARNING: DATABASE_URL not set — free-reading limit is OFF.")
+        return
+    db_pool = await asyncpg.create_pool(DATABASE_URL)
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS free_readings (
+                user_id BIGINT PRIMARY KEY,
+                last_reading_date DATE NOT NULL
+            )
+        """)
+    print("Database ready — free-reading limit is ON.")
+
+
+async def has_used_free_reading_today(user_id):
+    """True if this user already had a free reading today (UTC)."""
+    if db_pool is None:
+        return False  # No DB configured → don't block anyone.
+    today = datetime.now(timezone.utc).date()
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT last_reading_date FROM free_readings WHERE user_id = $1",
+            user_id,
+        )
+    return row is not None and row["last_reading_date"] == today
+
+
+async def record_free_reading(user_id):
+    """Stamp this user's free reading as happening today (UTC)."""
+    if db_pool is None:
+        return
+    today = datetime.now(timezone.utc).date()
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO free_readings (user_id, last_reading_date)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id)
+            DO UPDATE SET last_reading_date = $2
+            """,
+            user_id, today,
+        )
+
+
+def is_patreon_member(interaction):
+    """True if the user holds the Patreon role (limit doesn't apply to them)."""
+    if interaction.guild is None:
+        return False
+    patreon_role = discord.utils.get(interaction.guild.roles, name=PATREON_ROLE_NAME)
+    return patreon_role is not None and patreon_role in interaction.user.roles
 
 
 MADAME_IBEX_SYSTEM = """You are channeling the voice of Madame Ibex — a visual tarot reader of rare and unconventional sight.
@@ -118,6 +182,7 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
 
 @bot.event
 async def on_ready():
+    await setup_database()
     await tree.sync()
     print(f"Madame Ibex is present. Logged in as {bot.user}")
 
@@ -126,6 +191,19 @@ async def on_ready():
 @app_commands.describe(question="Optional: What question are you bringing to the cards?")
 async def reading(interaction: discord.Interaction, question: str = None):
     await interaction.response.defer()
+
+    # Daily limit: non-Patreon users get one free reading per day.
+    if not is_patreon_member(interaction):
+        if await has_used_free_reading_today(interaction.user.id):
+            await interaction.followup.send(
+                "✦ Madame Ibex has already read for you today.\n"
+                "The cards ask for a day's pause before they speak again. "
+                "Return tomorrow — or unlock unlimited readings by supporting "
+                "Madame Ibex on Patreon.",
+                ephemeral=True,
+            )
+            return
+
     all_card_names = list(CARDS.keys())
     drawn = random.sample(all_card_names, 3)
     positions = ["Past", "Present", "Future"]
@@ -134,6 +212,10 @@ async def reading(interaction: discord.Interaction, question: str = None):
     embeds = build_reading_embeds("3-Card Reading", cards_in_reading, summary, question)
     # One embed per card (image shown inline) + the summary embed last.
     await interaction.followup.send(embeds=embeds)
+
+    # Record the reading only after it was successfully delivered.
+    if not is_patreon_member(interaction):
+        await record_free_reading(interaction.user.id)
 
 
 class SpreadSelect(discord.ui.Select):
@@ -175,67 +257,4 @@ class CardEntryModal(discord.ui.Modal):
         raw = self.card_input.value.strip().split("\n")
         cards_in_reading = []
         errors = []
-        for i, pos in enumerate(self.positions):
-            if i < len(raw):
-                card_name = raw[i].strip()
-                card_data = get_card(card_name)
-                if card_data:
-                    cards_in_reading.append((pos, card_data[0], card_data[1]))
-                else:
-                    errors.append(f"Card not found: '{card_name}'")
-            else:
-                errors.append(f"Missing card for position: {pos}")
-
-        if errors:
-            await interaction.followup.send(
-                f"⚠️ Madame Ibex could not complete this reading:\n" + "\n".join(errors) +
-                "\n\nPlease check card names and try again.", ephemeral=True)
-            return
-
-        summary = madame_ibex_summary(cards_in_reading, self.question, self.spread_name)
-        embeds = build_reading_embeds(f"Madame Ibex — {self.spread_name}", cards_in_reading, summary, self.question)
-        await interaction.followup.send(embeds=embeds)
-
-
-@tree.command(name="myreading", description="Madame Ibex reads your cards personally — Patreon members only")
-@app_commands.describe(question="The question or situation you are bringing to Madame Ibex")
-async def myreading(interaction: discord.Interaction, question: str = None):
-    patreon_role = discord.utils.get(interaction.guild.roles, name=PATREON_ROLE_NAME)
-    if patreon_role is None or patreon_role not in interaction.user.roles:
-        await interaction.response.send_message(
-            "✦ Personal readings with Madame Ibex are available to Patreon supporters.\n"
-            "Visit our Patreon to unlock this and support Madame Ibex's work.",
-            ephemeral=True
-        )
-        return
-    view = SpreadView(question)
-    await interaction.response.send_message(
-        "✦ Madame Ibex is ready. Choose your spread:", view=view, ephemeral=True)
-
-
-@tree.command(name="cardinfo", description="Look up Madame Ibex's interpretation of a specific card")
-@app_commands.describe(card="The name of the card")
-async def cardinfo(interaction: discord.Interaction, card: str):
-    result = get_card(card)
-    if not result:
-        await interaction.response.send_message(
-            f"✦ '{card}' was not found. Check the spelling and try again.", ephemeral=True)
-        return
-    card_name, card_data = result
-    color = discord.Color.from_rgb(75, 0, 130)
-    embed = discord.Embed(title=f"✦ {card_name}", color=color)
-    embed.set_author(name="Madame Ibex — The Cards As I See Them")
-    if card_data.get("madame_ibex"):
-        embed.add_field(name="Madame Ibex Sees", value=card_data["madame_ibex"][:1000], inline=False)
-    else:
-        embed.add_field(
-            name="Traditional Meaning",
-            value=f"{card_data.get('traditional', 'Coming soon.')}\n\n*(Madame Ibex has not yet written her interpretation of this card)*",
-            inline=False)
-    if card_data.get("image_url"):
-        embed.set_image(url=card_data["image_url"])
-    embed.set_footer(text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot")
-    await interaction.response.send_message(embed=embed)
-
-
-bot.run(DISCORD_TOKEN)
+        for i, pos in enumerat
