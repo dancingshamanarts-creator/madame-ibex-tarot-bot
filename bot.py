@@ -27,20 +27,61 @@ db_pool = None
 
 
 async def setup_database():
-    """Create the connection pool and the tracking table if missing."""
+    """Create the connection pool and both tracking tables if missing."""
     global db_pool
     if not DATABASE_URL:
         print("WARNING: DATABASE_URL not set — free-reading limit is OFF.")
         return
     db_pool = await asyncpg.create_pool(DATABASE_URL)
     async with db_pool.acquire() as conn:
+        # Free /reading — one per day per non-Patreon user
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS free_readings (
                 user_id BIGINT PRIMARY KEY,
                 last_reading_date DATE NOT NULL
             )
         """)
+        # Paid /myreading — monthly count per Patreon user
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS patreon_readings (
+                user_id BIGINT NOT NULL,
+                year    SMALLINT NOT NULL,
+                month   SMALLINT NOT NULL,
+                count   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, year, month)
+            )
+        """)
     print("Database ready — free-reading limit is ON.")
+
+
+async def get_monthly_reading_count(user_id):
+    """Return how many /myreading reads this user has used this month."""
+    if db_pool is None:
+        return 0
+    now = datetime.now(timezone.utc)
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT count FROM patreon_readings WHERE user_id=$1 AND year=$2 AND month=$3",
+            user_id, now.year, now.month,
+        )
+    return row["count"] if row else 0
+
+
+async def increment_monthly_reading_count(user_id):
+    """Add one to this user's /myreading count for the current month."""
+    if db_pool is None:
+        return
+    now = datetime.now(timezone.utc)
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO patreon_readings (user_id, year, month, count)
+            VALUES ($1, $2, $3, 1)
+            ON CONFLICT (user_id, year, month)
+            DO UPDATE SET count = patreon_readings.count + 1
+            """,
+            user_id, now.year, now.month,
+        )
 
 
 async def has_used_free_reading_today(user_id):
@@ -73,12 +114,31 @@ async def record_free_reading(user_id):
         )
 
 
-def is_patreon_member(interaction):
-    """True if the user holds the Patreon role (limit doesn't apply to them)."""
+# ─── PATREON TIERS ──────────────────────────────────────────────────
+# Maps each Discord role name to its monthly /myreading limit.
+# None means unlimited.
+TIER_LIMITS = {
+    "Oracle":  None,   # $20/mo — unlimited
+    "Devotee": 15,     # $10/mo — 15 reads/month
+    "Seeker":  5,      # $5/mo  —  5 reads/month
+}
+
+
+def get_patreon_tier(interaction):
+    """Return the name of the user's highest Patreon tier, or None if
+    they have no Patreon role at all.  Oracle > Devotee > Seeker."""
     if interaction.guild is None:
-        return False
-    patreon_role = discord.utils.get(interaction.guild.roles, name=PATREON_ROLE_NAME)
-    return patreon_role is not None and patreon_role in interaction.user.roles
+        return None
+    for tier in ("Oracle", "Devotee", "Seeker"):
+        role = discord.utils.get(interaction.guild.roles, name=tier)
+        if role and role in interaction.user.roles:
+            return tier
+    return None
+
+
+def is_patreon_member(interaction):
+    """True if the user holds any Patreon tier role."""
+    return get_patreon_tier(interaction) is not None
 
 
 MADAME_IBEX_SYSTEM = """You are channeling the voice of Madame Ibex — a visual tarot reader of rare and unconventional sight.
@@ -277,19 +337,37 @@ class CardEntryModal(discord.ui.Modal):
         summary = madame_ibex_summary(cards_in_reading, self.question, self.spread_name)
         embeds = build_reading_embeds(f"Madame Ibex — {self.spread_name}", cards_in_reading, summary, self.question)
         await interaction.followup.send(embeds=embeds)
+        # Record the read after successful delivery.
+        await increment_monthly_reading_count(interaction.user.id)
 
 
 @tree.command(name="myreading", description="Madame Ibex reads your cards personally — Patreon members only")
 @app_commands.describe(question="The question or situation you are bringing to Madame Ibex")
 async def myreading(interaction: discord.Interaction, question: str = None):
-    patreon_role = discord.utils.get(interaction.guild.roles, name=PATREON_ROLE_NAME)
-    if patreon_role is None or patreon_role not in interaction.user.roles:
+    tier = get_patreon_tier(interaction)
+
+    # Not a Patreon member at all.
+    if tier is None:
         await interaction.response.send_message(
             "✦ Personal readings with Madame Ibex are available to Patreon supporters.\n"
             "Visit our Patreon to unlock this and support Madame Ibex's work.",
             ephemeral=True
         )
         return
+
+    # Check monthly limit (Oracle is unlimited).
+    limit = TIER_LIMITS[tier]
+    if limit is not None:
+        used = await get_monthly_reading_count(interaction.user.id)
+        if used >= limit:
+            await interaction.response.send_message(
+                f"✦ You have used all {limit} of your {tier} readings for this month.\n"
+                "The cards will be ready for you again when the new month begins — "
+                "or consider upgrading your Patreon tier for more readings.",
+                ephemeral=True
+            )
+            return
+
     view = SpreadView(question)
     await interaction.response.send_message(
         "✦ Madame Ibex is ready. Choose your spread:", view=view, ephemeral=True)
