@@ -274,7 +274,12 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
         description=safe_summary,
         color=color,
     )
-    summary_embed.set_footer(text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot")
+    summary_embed.set_footer(
+        text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot\n"
+             "For entertainment purposes only · 18+ · AI-assisted · "
+             "Not a substitute for professional medical, legal, financial, "
+             "or psychological advice."
+    )
     embeds.append(summary_embed)
 
     return embeds
@@ -285,7 +290,7 @@ async def send_embeds_in_batches(interaction, embeds):
     produces 11 (10 cards + summary), so send in batches of 10."""
     for i in range(0, len(embeds), 10):
         batch = embeds[i:i + 10]
-        await interaction.followup.send(embeds=batch)
+        await interaction.followup.send(embeds=batch, ephemeral=True)
 
 
 @bot.event
@@ -298,7 +303,7 @@ async def on_ready():
 @tree.command(name="reading", description="Draw a free 3-card Past/Present/Future reading")
 @app_commands.describe(question="Optional: What question are you bringing to the cards?")
 async def reading(interaction: discord.Interaction, question: str = None):
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
 
     # Daily limit: non-Patreon users get one free reading per day.
     if not is_patreon_member(interaction):
@@ -317,7 +322,7 @@ async def reading(interaction: discord.Interaction, question: str = None):
     summary = madame_ibex_summary(cards_in_reading, question, "3 Card Past/Present/Future")
     embeds = build_reading_embeds("3-Card Reading", cards_in_reading, summary, question)
     # One embed per card (image shown inline) + the summary embed last.
-    await interaction.followup.send(embeds=embeds)
+    await send_embeds_in_batches(interaction, embeds)
 
     # Record the reading only after it was successfully delivered.
     if not is_patreon_member(interaction):
@@ -331,7 +336,7 @@ class SpreadSelect(discord.ui.Select):
         super().__init__(placeholder="Choose the spread type...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         spread_name = self.values[0]
         spread = SPREAD_TYPES[spread_name]
         positions = spread["positions"]
@@ -408,8 +413,13 @@ async def cardinfo(interaction: discord.Interaction, card: str):
             inline=False)
     if card_data.get("image_url"):
         embed.set_image(url=card_data["image_url"])
-    embed.set_footer(text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot")
-    await interaction.response.send_message(embed=embed)
+    embed.set_footer(
+        text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot\n"
+             "For entertainment purposes only · 18+ · AI-assisted · "
+             "Not a substitute for professional medical, legal, financial, "
+             "or psychological advice."
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 bot.run(DISCORD_TOKEN)
