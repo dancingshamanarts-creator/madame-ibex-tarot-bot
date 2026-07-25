@@ -240,6 +240,14 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
     return embeds
 
 
+async def send_embeds_in_batches(interaction, embeds):
+    """Discord allows at most 10 embeds per message. The Celtic Cross
+    produces 11 (10 cards + summary), so send in batches of 10."""
+    for i in range(0, len(embeds), 10):
+        batch = embeds[i:i + 10]
+        await interaction.followup.send(embeds=batch)
+
+
 @bot.event
 async def on_ready():
     await setup_database()
@@ -285,60 +293,32 @@ class SpreadSelect(discord.ui.Select):
         super().__init__(placeholder="Choose the spread type...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         spread_name = self.values[0]
         spread = SPREAD_TYPES[spread_name]
         positions = spread["positions"]
-        modal = CardEntryModal(spread_name, positions, self.querent_question)
-        await interaction.response.send_modal(modal)
+
+        # Auto-draw one card per position, no repeats.
+        all_card_names = list(CARDS.keys())
+        drawn = random.sample(all_card_names, len(positions))
+        cards_in_reading = [
+            (positions[i], drawn[i], CARDS[drawn[i]]) for i in range(len(positions))
+        ]
+
+        summary = madame_ibex_summary(cards_in_reading, self.querent_question, spread_name)
+        embeds = build_reading_embeds(
+            f"Madame Ibex — {spread_name}", cards_in_reading, summary, self.querent_question
+        )
+        await send_embeds_in_batches(interaction, embeds)
+
+        # Record the read after successful delivery.
+        await increment_monthly_reading_count(interaction.user.id)
 
 
 class SpreadView(discord.ui.View):
     def __init__(self, question):
         super().__init__()
         self.add_item(SpreadSelect(question))
-
-
-class CardEntryModal(discord.ui.Modal):
-    def __init__(self, spread_name, positions, question):
-        super().__init__(title=f"Enter Cards — {spread_name}")
-        self.spread_name = spread_name
-        self.positions = positions
-        self.question = question
-        self.card_input = discord.ui.TextInput(
-            label="Enter card names, one per line",
-            style=discord.TextStyle.paragraph,
-            placeholder="\n".join(positions),
-            required=True
-        )
-        self.add_item(self.card_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        raw = self.card_input.value.strip().split("\n")
-        cards_in_reading = []
-        errors = []
-        for i, pos in enumerate(self.positions):
-            if i < len(raw):
-                card_name = raw[i].strip()
-                card_data = get_card(card_name)
-                if card_data:
-                    cards_in_reading.append((pos, card_data[0], card_data[1]))
-                else:
-                    errors.append(f"Card not found: '{card_name}'")
-            else:
-                errors.append(f"Missing card for position: {pos}")
-
-        if errors:
-            await interaction.followup.send(
-                f"⚠️ Madame Ibex could not complete this reading:\n" + "\n".join(errors) +
-                "\n\nPlease check card names and try again.", ephemeral=True)
-            return
-
-        summary = madame_ibex_summary(cards_in_reading, self.question, self.spread_name)
-        embeds = build_reading_embeds(f"Madame Ibex — {self.spread_name}", cards_in_reading, summary, self.question)
-        await interaction.followup.send(embeds=embeds)
-        # Record the read after successful delivery.
-        await increment_monthly_reading_count(interaction.user.id)
 
 
 @tree.command(name="myreading", description="Madame Ibex reads your cards personally — Patreon members only")
