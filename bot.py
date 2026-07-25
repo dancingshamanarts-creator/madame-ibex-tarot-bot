@@ -257,4 +257,67 @@ class CardEntryModal(discord.ui.Modal):
         raw = self.card_input.value.strip().split("\n")
         cards_in_reading = []
         errors = []
-        for i, pos in enumerat
+        for i, pos in enumerate(self.positions):
+            if i < len(raw):
+                card_name = raw[i].strip()
+                card_data = get_card(card_name)
+                if card_data:
+                    cards_in_reading.append((pos, card_data[0], card_data[1]))
+                else:
+                    errors.append(f"Card not found: '{card_name}'")
+            else:
+                errors.append(f"Missing card for position: {pos}")
+
+        if errors:
+            await interaction.followup.send(
+                f"⚠️ Madame Ibex could not complete this reading:\n" + "\n".join(errors) +
+                "\n\nPlease check card names and try again.", ephemeral=True)
+            return
+
+        summary = madame_ibex_summary(cards_in_reading, self.question, self.spread_name)
+        embeds = build_reading_embeds(f"Madame Ibex — {self.spread_name}", cards_in_reading, summary, self.question)
+        await interaction.followup.send(embeds=embeds)
+
+
+@tree.command(name="myreading", description="Madame Ibex reads your cards personally — Patreon members only")
+@app_commands.describe(question="The question or situation you are bringing to Madame Ibex")
+async def myreading(interaction: discord.Interaction, question: str = None):
+    patreon_role = discord.utils.get(interaction.guild.roles, name=PATREON_ROLE_NAME)
+    if patreon_role is None or patreon_role not in interaction.user.roles:
+        await interaction.response.send_message(
+            "✦ Personal readings with Madame Ibex are available to Patreon supporters.\n"
+            "Visit our Patreon to unlock this and support Madame Ibex's work.",
+            ephemeral=True
+        )
+        return
+    view = SpreadView(question)
+    await interaction.response.send_message(
+        "✦ Madame Ibex is ready. Choose your spread:", view=view, ephemeral=True)
+
+
+@tree.command(name="cardinfo", description="Look up Madame Ibex's interpretation of a specific card")
+@app_commands.describe(card="The name of the card")
+async def cardinfo(interaction: discord.Interaction, card: str):
+    result = get_card(card)
+    if not result:
+        await interaction.response.send_message(
+            f"✦ '{card}' was not found. Check the spelling and try again.", ephemeral=True)
+        return
+    card_name, card_data = result
+    color = discord.Color.from_rgb(75, 0, 130)
+    embed = discord.Embed(title=f"✦ {card_name}", color=color)
+    embed.set_author(name="Madame Ibex — The Cards As I See Them")
+    if card_data.get("madame_ibex"):
+        embed.add_field(name="Madame Ibex Sees", value=card_data["madame_ibex"][:1000], inline=False)
+    else:
+        embed.add_field(
+            name="Traditional Meaning",
+            value=f"{card_data.get('traditional', 'Coming soon.')}\n\n*(Madame Ibex has not yet written her interpretation of this card)*",
+            inline=False)
+    if card_data.get("image_url"):
+        embed.set_image(url=card_data["image_url"])
+    embed.set_footer(text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot")
+    await interaction.response.send_message(embed=embed)
+
+
+bot.run(DISCORD_TOKEN)
