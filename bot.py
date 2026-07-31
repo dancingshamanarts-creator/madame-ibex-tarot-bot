@@ -187,10 +187,35 @@ def draw_cards(positions):
     ]
 
 
+def card_image_url(card_data, is_reversed):
+    """Return the image URL for a card in the given orientation.
+
+    The rotated copies live beside the originals in the repo, prefixed
+    "reversed-" (e.g. reversed-major-00-the-fool.jpg). Shared by readings
+    and /cardinfo so a turned card looks the same everywhere.
+    """
+    image_url = card_data.get("image_url")
+    if image_url and is_reversed:
+        base, _, filename = image_url.rpartition("/")
+        image_url = f"{base}/reversed-{filename}"
+    return image_url
+
+
+def card_body(card_data, is_reversed):
+    """Madame Ibex's interpretation, marked when the card came turned."""
+    body = card_data["madame_ibex"]
+    if is_reversed:
+        body = "**The card came turned.**\n\n" + body
+    # Embed description limit is 4096; trim as a safety net.
+    if len(body) > 4000:
+        body = body[:3997] + "..."
+    return body
+
+
 def madame_ibex_summary(cards_in_reading, question=None, spread_type="3 Card"):
     card_descriptions = []
     for position, card_name, card_data, is_reversed in cards_in_reading:
-        interp = card_data.get("madame_ibex") or f"[Traditional: {card_data.get('traditional', 'Interpretation coming')}]"
+        interp = card_data["madame_ibex"]
         orientation = "REVERSED" if is_reversed else "upright"
         card_descriptions.append(
             f"Position: {position}\nCard: {card_name} ({orientation})\nInterpretation: {interp}"
@@ -214,7 +239,7 @@ def madame_ibex_summary(cards_in_reading, question=None, spread_type="3 Card"):
 def build_reading_embeds(title, cards_in_reading, summary, question=None):
     """Build a LIST of embeds:
       - one embed per card, showing that card's image inline (by URL) plus
-        its interpretation (or traditional meaning + a note if not yet written)
+        Madame Ibex's interpretation of it
       - a final embed carrying Madame Ibex's full woven reading
 
     Images set by URL preview inline (no clicking), which needs the repo
@@ -226,20 +251,7 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
 
     total = len(cards_in_reading)
     for i, (position, card_name, card_data, is_reversed) in enumerate(cards_in_reading):
-        interp = card_data.get("madame_ibex")
-        if interp:
-            body = interp
-        else:
-            traditional = card_data.get("traditional", "")
-            body = (
-                f"*{traditional}*\n\n"
-                f"*Madame Ibex is still interpreting this card.*"
-            )
-        if is_reversed:
-            body = "**The card came turned.**\n\n" + body
-        # Description limit is 4096; trim as a safety net.
-        if len(body) > 4000:
-            body = body[:3997] + "..."
+        body = card_body(card_data, is_reversed)
 
         card_embed = discord.Embed(
             title=f"✦ {position}: {card_name}" + (" — Reversed" if is_reversed else ""),
@@ -253,13 +265,8 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
                 q = question if len(question) <= 1024 else question[:1021] + "..."
                 card_embed.add_field(name="Question", value=q, inline=False)
 
-        image_url = card_data.get("image_url")
+        image_url = card_image_url(card_data, is_reversed)
         if image_url:
-            if is_reversed:
-                # The rotated copies live beside the originals, prefixed
-                # "reversed-" (e.g. reversed-major-00-the-fool.jpg).
-                base, _, filename = image_url.rpartition("/")
-                image_url = f"{base}/reversed-{filename}"
             card_embed.set_image(url=image_url)
 
         card_embed.set_footer(text=f"Card {i+1} of {total}")
@@ -393,26 +400,32 @@ async def myreading(interaction: discord.Interaction, question: str = None):
 
 
 @tree.command(name="cardinfo", description="Look up Madame Ibex's interpretation of a specific card")
-@app_commands.describe(card="The name of the card")
-async def cardinfo(interaction: discord.Interaction, card: str):
+@app_commands.describe(
+    card="The name of the card",
+    reversed="Show the card turned. Leave blank to let the cards decide."
+)
+async def cardinfo(interaction: discord.Interaction, card: str, reversed: bool = None):
     result = get_card(card)
     if not result:
         await interaction.response.send_message(
             f"✦ '{card}' was not found. Check the spelling and try again.", ephemeral=True)
         return
     card_name, card_data = result
+    # Blank means let it fall as it falls, the same ~50/50 as a reading.
+    is_reversed = random.choice([True, False]) if reversed is None else reversed
     color = discord.Color.from_rgb(75, 0, 130)
-    embed = discord.Embed(title=f"✦ {card_name}", color=color)
+    # Interpretation goes in the description (4096-char limit), not an embed
+    # field (1024) — most interpretations run well past 1024 and were being
+    # cut off mid-sentence.
+    embed = discord.Embed(
+        title=f"✦ {card_name}" + (" — Reversed" if is_reversed else ""),
+        description=card_body(card_data, is_reversed),
+        color=color,
+    )
     embed.set_author(name="Madame Ibex — The Cards As I See Them")
-    if card_data.get("madame_ibex"):
-        embed.add_field(name="Madame Ibex Sees", value=card_data["madame_ibex"][:1000], inline=False)
-    else:
-        embed.add_field(
-            name="Traditional Meaning",
-            value=f"{card_data.get('traditional', 'Coming soon.')}\n\n*(Madame Ibex has not yet written her interpretation of this card)*",
-            inline=False)
-    if card_data.get("image_url"):
-        embed.set_image(url=card_data["image_url"])
+    image_url = card_image_url(card_data, is_reversed)
+    if image_url:
+        embed.set_image(url=image_url)
     embed.set_footer(
         text="The Cards As I See Them — Madame Ibex | Madame Ibex Tarot\n"
              "For entertainment purposes only · 18+ · AI-assisted · "
