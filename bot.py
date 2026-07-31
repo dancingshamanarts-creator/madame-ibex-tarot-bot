@@ -1,7 +1,9 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import asyncio
 import random
+import traceback
 import os
 import anthropic
 import asyncpg
@@ -326,7 +328,9 @@ async def reading(interaction: discord.Interaction, question: str = None):
 
     positions = ["Past", "Present", "Future"]
     cards_in_reading = draw_cards(positions)
-    summary = madame_ibex_summary(cards_in_reading, question, "3 Card Past/Present/Future")
+    summary = await asyncio.to_thread(
+        madame_ibex_summary, cards_in_reading, question, "3 Card Past/Present/Future"
+    )
     embeds = build_reading_embeds("3-Card Reading", cards_in_reading, summary, question)
     # One embed per card (image shown inline) + the summary embed last.
     await send_embeds_in_batches(interaction, embeds)
@@ -343,27 +347,50 @@ class SpreadSelect(discord.ui.Select):
         super().__init__(placeholder="Choose the spread type...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        spread_name = self.values[0]
-        spread = SPREAD_TYPES[spread_name]
-        positions = spread["positions"]
+        # thinking=True matters here. On a COMPONENT interaction, a plain
+        # defer() sends "deferred message update" and silently drops
+        # ephemeral — Discord then expects an edit, not a new message, and
+        # the followups go nowhere. thinking=True makes this behave like the
+        # slash-command defer in /reading, which is the path that works.
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
-        # Auto-draw one card per position, no repeats, each upright or reversed.
-        cards_in_reading = draw_cards(positions)
+        try:
+            spread_name = self.values[0]
+            spread = SPREAD_TYPES[spread_name]
+            positions = spread["positions"]
 
-        summary = madame_ibex_summary(cards_in_reading, self.querent_question, spread_name)
-        embeds = build_reading_embeds(
-            f"Madame Ibex — {spread_name}", cards_in_reading, summary, self.querent_question
-        )
-        await send_embeds_in_batches(interaction, embeds)
+            # Auto-draw one card per position, no repeats, each upright or reversed.
+            cards_in_reading = draw_cards(positions)
 
-        # Record the read after successful delivery.
-        await increment_monthly_reading_count(interaction.user.id)
+            # Run the blocking API call off the event loop so the bot keeps
+            # its heartbeat alive. A 10-card Celtic Cross takes long enough
+            # that blocking here can drop the gateway connection mid-reading.
+            summary = await asyncio.to_thread(
+                madame_ibex_summary, cards_in_reading, self.querent_question, spread_name
+            )
+            embeds = build_reading_embeds(
+                f"Madame Ibex — {spread_name}", cards_in_reading, summary, self.querent_question
+            )
+            await send_embeds_in_batches(interaction, embeds)
+
+            # Record the read after successful delivery.
+            await increment_monthly_reading_count(interaction.user.id)
+        except Exception:
+            # Without this, discord.py swallows the error into the server log
+            # and the querent just sees the dropdown stop with no explanation.
+            traceback.print_exc()
+            await interaction.followup.send(
+                "✦ Something went wrong before the cards could speak. "
+                "Your reading has not been counted. Please try again.",
+                ephemeral=True,
+            )
 
 
 class SpreadView(discord.ui.View):
     def __init__(self, question):
-        super().__init__()
+        # Default is 180s. Once a View times out the dropdown silently stops
+        # responding, which looks identical to a crash. Ten minutes.
+        super().__init__(timeout=600)
         self.add_item(SpreadSelect(question))
 
 
