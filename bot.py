@@ -203,9 +203,15 @@ def card_image_url(card_data, is_reversed):
     return image_url
 
 
-def card_body(card_data, is_reversed):
-    """Madame Ibex's interpretation, marked when the card came turned."""
-    body = card_data["madame_ibex"]
+def card_body(card_data, is_reversed, short=False):
+    """Madame Ibex's interpretation, marked when the card came turned.
+
+    short=True gives the condensed version used on reading embeds — a
+    10-card spread of the full interpretations runs about twice Discord's
+    6000-char per-message cap. /cardinfo shows one card, so it uses the
+    full text.
+    """
+    body = card_data["madame_ibex_short"] if short else card_data["madame_ibex"]
     if is_reversed:
         body = "**The card came turned.**\n\n" + body
     # Embed description limit is 4096; trim as a safety net.
@@ -253,7 +259,7 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
 
     total = len(cards_in_reading)
     for i, (position, card_name, card_data, is_reversed) in enumerate(cards_in_reading):
-        body = card_body(card_data, is_reversed)
+        body = card_body(card_data, is_reversed, short=True)
 
         card_embed = discord.Embed(
             title=f"✦ {position}: {card_name}" + (" — Reversed" if is_reversed else ""),
@@ -294,11 +300,53 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
     return embeds
 
 
+def embed_length(embed):
+    """Total characters Discord counts for an embed.
+
+    Discord sums title + description + footer + author + every field name
+    and value. Getting this wrong is what caused the 6000-limit crash, so
+    count all of it rather than the description alone.
+    """
+    total = len(embed.title or "") + len(embed.description or "")
+    if embed.footer and embed.footer.text:
+        total += len(embed.footer.text)
+    if embed.author and embed.author.name:
+        total += len(embed.author.name)
+    for field in embed.fields:
+        total += len(field.name or "") + len(field.value or "")
+    return total
+
+
 async def send_embeds_in_batches(interaction, embeds):
-    """Discord allows at most 10 embeds per message. The Celtic Cross
-    produces 11 (10 cards + summary), so send in batches of 10."""
-    for i in range(0, len(embeds), 10):
-        batch = embeds[i:i + 10]
+    """Send embeds respecting BOTH of Discord's limits.
+
+    Two separate caps apply, and only obeying the first one is what broke
+    the larger spreads:
+      - at most 10 embeds per message
+      - at most 6000 characters TOTAL across all embeds in that message
+
+    Madame Ibex's interpretations run ~1000-1700 characters each, so a
+    10-card Celtic Cross is roughly 12000 — double the ceiling. Pack by
+    running total instead, which keeps the cards in order and sends as few
+    messages as the limits allow.
+    """
+    MAX_EMBEDS = 10
+    MAX_CHARS = 6000
+
+    batch = []
+    batch_chars = 0
+
+    for embed in embeds:
+        size = embed_length(embed)
+        # Flush the current batch if adding this embed would break either cap.
+        if batch and (len(batch) >= MAX_EMBEDS or batch_chars + size > MAX_CHARS):
+            await interaction.followup.send(embeds=batch, ephemeral=True)
+            batch = []
+            batch_chars = 0
+        batch.append(embed)
+        batch_chars += size
+
+    if batch:
         await interaction.followup.send(embeds=batch, ephemeral=True)
 
 
