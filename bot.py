@@ -247,8 +247,8 @@ def madame_fajataan_summary(cards_in_reading, question=None, spread_type="3 Card
 def build_reading_embeds(title, cards_in_reading, summary, question=None):
     """Build a LIST of embeds:
       - one embed per card, showing that card's image inline (by URL) plus
-        Madame fajataan's interpretation of it
-      - a final embed carrying Madame fajataan's full woven reading
+        Madame Fajataan's interpretation of it
+      - a final embed carrying Madame Fajataan's full woven reading
 
     Images set by URL preview inline (no clicking), which needs the repo
     public — it is. Discord allows at most 10 embeds per message, which
