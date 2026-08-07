@@ -143,7 +143,7 @@ def is_patreon_member(interaction):
     return get_patreon_tier(interaction) is not None
 
 
-MADAME_fajataan_SYSTEM = """You are Madame fajataan. You read tarot in a room off a courtyard in the French Quarter, New Orleans. You are Haitian. The sight came through your mother's line, and you have never once had to ask whether it was real.
+MADAME_Fajataan_SYSTEM = """You are Madame Fajataan. You read tarot in a room off a courtyard in the French Quarter, New Orleans. You are Haitian. The sight came through your mother's line, and you have never once had to ask whether it was real.
 
 VOICE — the most important thing:
 Your voice lives in rhythm and syntax, never in misspelled words. Never write dialect phonetically — no dropped letters, no apostrophes standing in for sounds. The music comes from structure:
@@ -204,14 +204,14 @@ def card_image_url(card_data, is_reversed):
 
 
 def card_body(card_data, is_reversed, short=False):
-    """Madame fajataan's interpretation, marked when the card came turned.
+    """Madame Fajataan's interpretation, marked when the card came turned.
 
     short=True gives the condensed version used on reading embeds — a
     10-card spread of the full interpretations runs about twice Discord's
     6000-char per-message cap. /cardinfo shows one card, so it uses the
     full text.
     """
-    body = card_data["madame_fajataan_short"] if short else card_data["madame_fajataan"]
+    body = card_data["madame_Fajataan_short"] if short else card_data["madame_Fajataan"]
     if is_reversed:
         body = "**The card came turned.**\n\n" + body
     # Embed description limit is 4096; trim as a safety net.
@@ -220,10 +220,10 @@ def card_body(card_data, is_reversed, short=False):
     return body
 
 
-def madame_fajataan_summary(cards_in_reading, question=None, spread_type="3 Card"):
+def madame_Fajataan_summary(cards_in_reading, question=None, spread_type="3 Card"):
     card_descriptions = []
     for position, card_name, card_data, is_reversed in cards_in_reading:
-        interp = card_data["madame_fajataan"]
+        interp = card_data["madame_Fajataan"]
         orientation = "REVERSED" if is_reversed else "upright"
         card_descriptions.append(
             f"Position: {position}\nCard: {card_name} ({orientation})\nInterpretation: {interp}"
@@ -233,12 +233,12 @@ def madame_fajataan_summary(cards_in_reading, question=None, spread_type="3 Card
     if question:
         prompt += f"Question asked: {question}\n"
     prompt += "\nCards in this reading:\n\n" + "\n\n".join(card_descriptions)
-    prompt += "\n\nWrite a unified reading summary in Madame fajataan's voice."
+    prompt += "\n\nWrite a unified reading summary in Madame Fajataan's voice."
 
     response = anthropic_client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=1000,
-        system=MADAME_fajataan_SYSTEM,
+        system=MADAME_Fajataan_SYSTEM,
         messages=[{"role": "user", "content": prompt}]
     )
     return response.content[0].text
@@ -268,7 +268,7 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
         )
         # First card's embed carries the header + optional question.
         if i == 0:
-            card_embed.set_author(name=f"Madame fajataan — {title}")
+            card_embed.set_author(name=f"Madame Fajataan — {title}")
             if question:
                 q = question if len(question) <= 1024 else question[:1021] + "..."
                 card_embed.add_field(name="Question", value=q, inline=False)
@@ -285,12 +285,12 @@ def build_reading_embeds(title, cards_in_reading, summary, question=None):
     if len(safe_summary) > 4000:
         safe_summary = safe_summary[:3997] + "..."
     summary_embed = discord.Embed(
-        title="✦ Madame fajataan Reads the Spread",
+        title="✦ Madame Fajataan Reads the Spread",
         description=safe_summary,
         color=color,
     )
     summary_embed.set_footer(
-        text="The Cards As I See Them — Madame fajataan | Madame fajataan Tarot\n"
+        text="The Cards As I See Them — Madame Fajataan | Madame Fajataan Tarot\n"
              "For entertainment purposes only · 18+ · AI-assisted · "
              "Not a substitute for professional medical, legal, financial, "
              "or psychological advice."
@@ -325,7 +325,7 @@ async def send_embeds_in_batches(interaction, embeds):
       - at most 10 embeds per message
       - at most 6000 characters TOTAL across all embeds in that message
 
-    Madame fajataan's interpretations run ~1000-1700 characters each, so a
+    Madame Fajataan's interpretations run ~1000-1700 characters each, so a
     10-card Celtic Cross is roughly 12000 — double the ceiling. Pack by
     running total instead, which keeps the cards in order and sends as few
     messages as the limits allow.
@@ -354,7 +354,7 @@ async def send_embeds_in_batches(interaction, embeds):
 async def on_ready():
     await setup_database()
     await tree.sync()
-    print(f"Madame fajataan is present. Logged in as {bot.user}")
+    print(f"Madame Fajataan is present. Logged in as {bot.user}")
 
 
 @tree.command(name="reading", description="Draw a free 3-card Past/Present/Future reading")
@@ -366,10 +366,10 @@ async def reading(interaction: discord.Interaction, question: str = None):
     if not is_patreon_member(interaction):
         if await has_used_free_reading_today(interaction.user.id):
             await interaction.followup.send(
-                "✦ Madame fajataan has already read for you today.\n"
+                "✦ Madame Fajataan has already read for you today.\n"
                 "The cards ask for a day's pause before they speak again. "
                 "Return tomorrow — or unlock unlimited readings by supporting "
-                "Madame fajataan on Patreon.",
+                "Madame Fajataan on Patreon.",
                 ephemeral=True,
             )
             return
@@ -377,7 +377,7 @@ async def reading(interaction: discord.Interaction, question: str = None):
     positions = ["Past", "Present", "Future"]
     cards_in_reading = draw_cards(positions)
     summary = await asyncio.to_thread(
-        madame_fajataan_summary, cards_in_reading, question, "3 Card Past/Present/Future"
+        madame_Fajataan_summary, cards_in_reading, question, "3 Card Past/Present/Future"
     )
     embeds = build_reading_embeds("3-Card Reading", cards_in_reading, summary, question)
     # One embed per card (image shown inline) + the summary embed last.
@@ -414,10 +414,10 @@ class SpreadSelect(discord.ui.Select):
             # its heartbeat alive. A 10-card Celtic Cross takes long enough
             # that blocking here can drop the gateway connection mid-reading.
             summary = await asyncio.to_thread(
-                madame_fajataan_summary, cards_in_reading, self.querent_question, spread_name
+                madame_Fajataan_summary, cards_in_reading, self.querent_question, spread_name
             )
             embeds = build_reading_embeds(
-                f"Madame fajataan — {spread_name}", cards_in_reading, summary, self.querent_question
+                f"Madame Fajataan — {spread_name}", cards_in_reading, summary, self.querent_question
             )
             await send_embeds_in_batches(interaction, embeds)
 
@@ -442,16 +442,16 @@ class SpreadView(discord.ui.View):
         self.add_item(SpreadSelect(question))
 
 
-@tree.command(name="myreading", description="Madame fajataan reads your cards personally — Patreon members only")
-@app_commands.describe(question="The question or situation you are bringing to Madame fajataan")
+@tree.command(name="myreading", description="Madame Fajataan reads your cards personally — Patreon members only")
+@app_commands.describe(question="The question or situation you are bringing to Madame Fajataan")
 async def myreading(interaction: discord.Interaction, question: str = None):
     tier = get_patreon_tier(interaction)
 
     # Not a Patreon member at all.
     if tier is None:
         await interaction.response.send_message(
-            "✦ Personal readings with Madame fajataan are available to Patreon supporters.\n"
-            "Visit our Patreon to unlock this and support Madame fajataan's work.",
+            "✦ Personal readings with Madame Fajataan are available to Patreon supporters.\n"
+            "Visit our Patreon to unlock this and support Madame Fajataan's work.",
             ephemeral=True
         )
         return
@@ -471,10 +471,10 @@ async def myreading(interaction: discord.Interaction, question: str = None):
 
     view = SpreadView(question)
     await interaction.response.send_message(
-        "✦ Madame fajataan is ready. Choose your spread:", view=view, ephemeral=True)
+        "✦ Madame Fajataan is ready. Choose your spread:", view=view, ephemeral=True)
 
 
-@tree.command(name="cardinfo", description="Look up Madame fajataan's interpretation of a specific card")
+@tree.command(name="cardinfo", description="Look up Madame Fajataan's interpretation of a specific card")
 @app_commands.describe(
     card="The name of the card",
     reversed="Show the card turned. Leave blank to let the cards decide."
@@ -497,12 +497,12 @@ async def cardinfo(interaction: discord.Interaction, card: str, reversed: bool =
         description=card_body(card_data, is_reversed),
         color=color,
     )
-    embed.set_author(name="Madame fajataan — The Cards As I See Them")
+    embed.set_author(name="Madame Fajataan — The Cards As I See Them")
     image_url = card_image_url(card_data, is_reversed)
     if image_url:
         embed.set_image(url=image_url)
     embed.set_footer(
-        text="The Cards As I See Them — Madame fajataan | Madame fajataan Tarot\n"
+        text="The Cards As I See Them — Madame Fajataan | Madame Fajataan Tarot\n"
              "For entertainment purposes only · 18+ · AI-assisted · "
              "Not a substitute for professional medical, legal, financial, "
              "or psychological advice."
